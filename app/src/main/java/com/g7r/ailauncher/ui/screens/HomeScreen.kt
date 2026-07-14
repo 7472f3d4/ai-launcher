@@ -238,8 +238,11 @@ private fun HeaderRow(
         }
     }
     val cal = remember(now) { Calendar.getInstance().apply { timeInMillis = now } }
-    val dateLine = "%d年%d月%d日（%s）".format(
-        cal.get(Calendar.YEAR),
+    val year = cal.get(Calendar.YEAR)
+    val reiwaYear = year - 2018
+    val dateLine = "%d(R%d)年%d月%d日(%s)".format(
+        year,
+        reiwaYear,
         cal.get(Calendar.MONTH) + 1,
         cal.get(Calendar.DAY_OF_MONTH),
         japaneseWeekday(cal.get(Calendar.DAY_OF_WEEK))
