@@ -5,7 +5,7 @@ import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Lightweight persistence (SharedPreferences + JSON) for stats, favorites and category overrides. */
+/** Lightweight persistence (SharedPreferences + JSON) for launcher settings and state. */
 class Storage(context: Context) {
 
     private val prefs: SharedPreferences =
@@ -41,6 +41,57 @@ class Storage(context: Context) {
 
     fun saveFavorites(favorites: List<String>) {
         prefs.edit().putString(KEY_FAVORITES, JSONArray(favorites).toString()).apply()
+    }
+
+    // ---- home dock (exactly four app/folder slots) ----
+    fun loadDock(): MutableList<DockEntry>? {
+        val raw = prefs.getString(KEY_DOCK, null) ?: return null
+        return runCatching {
+            val arr = JSONArray(raw)
+            val out = mutableListOf<DockEntry>()
+            for (i in 0 until arr.length()) {
+                val item = arr.getJSONObject(i)
+                when (item.optString("type")) {
+                    "app" -> out.add(DockEntry.App(item.getString("package")))
+                    "folder" -> {
+                        val packages = item.optJSONArray("packages") ?: JSONArray()
+                        val packageNames = buildList {
+                            for (j in 0 until packages.length()) add(packages.getString(j))
+                        }
+                        out.add(
+                            DockEntry.Folder(
+                                id = item.getString("id"),
+                                name = item.optString("name").ifBlank { "フォルダ" },
+                                packageNames = packageNames.distinct()
+                            )
+                        )
+                    }
+                    else -> out.add(DockEntry.Empty)
+                }
+            }
+            while (out.size < DOCK_SLOT_COUNT) out.add(DockEntry.Empty)
+            out.take(DOCK_SLOT_COUNT).toMutableList()
+        }.getOrNull()
+    }
+
+    fun saveDock(entries: List<DockEntry>) {
+        val arr = JSONArray()
+        entries.take(DOCK_SLOT_COUNT).forEach { entry ->
+            val item = JSONObject()
+            when (entry) {
+                DockEntry.Empty -> item.put("type", "empty")
+                is DockEntry.App -> item
+                    .put("type", "app")
+                    .put("package", entry.packageName)
+                is DockEntry.Folder -> item
+                    .put("type", "folder")
+                    .put("id", entry.id)
+                    .put("name", entry.name)
+                    .put("packages", JSONArray(entry.packageNames))
+            }
+            arr.put(item)
+        }
+        prefs.edit().putString(KEY_DOCK, arr.toString()).apply()
     }
 
     // ---- Todoist API token ----
@@ -123,9 +174,11 @@ class Storage(context: Context) {
     companion object {
         private const val KEY_STATS = "stats"
         private const val KEY_FAVORITES = "favorites_ordered"
+        private const val KEY_DOCK = "home_dock"
         private const val KEY_OVERRIDES = "overrides"
         private const val KEY_NEWS = "news_enabled"
         private const val KEY_WIDGETS = "widgets"
         private const val KEY_TODOIST_TOKEN = "todoist_token"
+        private const val DOCK_SLOT_COUNT = 4
     }
 }

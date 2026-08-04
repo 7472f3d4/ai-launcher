@@ -93,14 +93,21 @@ fun WidgetCanvas(
     host: WidgetHostManager,
     selectedId: Int?,
     onSelect: (Int?) -> Unit,
+    onLongPressEmptySpace: () -> Unit,
     onMove: (id: Int, col: Int, row: Int) -> Unit,
     onResize: (id: Int, col: Int, row: Int, spanW: Int, spanH: Int) -> Unit,
     onRemove: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(
-        modifier.pointerInput(Unit) {
-            detectTapGestures(onTap = { onSelect(null) })
+        modifier.pointerInput(onLongPressEmptySpace) {
+            detectTapGestures(
+                onTap = { onSelect(null) },
+                onLongPress = {
+                    onSelect(null)
+                    onLongPressEmptySpace()
+                }
+            )
         }
     ) {
         val density = LocalDensity.current

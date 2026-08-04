@@ -12,6 +12,8 @@ import com.g7r.ailauncher.data.AppStat
 import com.g7r.ailauncher.data.CalEvent
 import com.g7r.ailauncher.data.CalendarRepository
 import com.g7r.ailauncher.data.CategorySection
+import com.g7r.ailauncher.data.DockEntry
+import com.g7r.ailauncher.data.DockItem
 import com.g7r.ailauncher.data.LocationRepository
 import com.g7r.ailauncher.data.NewsItem
 import com.g7r.ailauncher.data.NewsRepository
@@ -34,6 +36,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.util.Calendar
+import java.util.UUID
 
 class LauncherViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -53,7 +56,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     private val _favorites = MutableStateFlow<List<String>>(emptyList())
     val favorites = _favorites.asStateFlow()
 
-    private val _dock = MutableStateFlow<List<AppInfo>>(emptyList())
+    private val _dock = MutableStateFlow<List<DockItem?>>(List(DOCK_SLOT_COUNT) { null })
     val dock = _dock.asStateFlow()
 
     private val _recentlyUsed = MutableStateFlow<List<AppInfo>>(emptyList())
@@ -98,7 +101,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     private var stats: MutableMap<String, AppStat> = mutableMapOf()
     private var overrides: MutableMap<String, String> = mutableMapOf()
     private var usage: Map<String, UsageSignal> = emptyMap()
-    private var dockDefaults: List<String> = emptyList()
+    private var dockEntries: MutableList<DockEntry> = mutableListOf()
     private var lastNews: Long = 0L
     private var lastWeather: Long = 0L
     private var lastTodoist: Long = 0L
@@ -115,8 +118,10 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
             usage = UsageStatsHelper.loadUsage(appContext)
             _usageAccess.value = UsageStatsHelper.hasPermission(appContext)
             _newsEnabled.value = storage.loadNewsEnabled()
-            dockDefaults = repo.defaultDockPackages()
             val loaded = repo.loadApps(overrides)
+            val savedDock = storage.loadDock()
+            dockEntries = savedDock ?: defaultDockEntries()
+            if (savedDock == null) storage.saveDock(dockEntries)
             _apps.value = loaded
             _favorites.value = favs
             recompute(loaded, favs)
@@ -307,7 +312,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         val now = System.currentTimeMillis()
         _recommendations.value = Recommender.recommend(loaded, stats, favs.toSet(), usage, now)
         _sections.value = buildSections(loaded, now)
-        _dock.value = buildDock(loaded, favs)
+        _dock.value = buildDock(loaded)
         _recentlyUsed.value = loaded
             .map { it to lastUsed(it) }
             .filter { it.second > 0L }
@@ -321,12 +326,97 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         updateAiMessage()
     }
 
-    private fun buildDock(loaded: List<AppInfo>, favs: List<String>): List<AppInfo> {
+    private fun buildDock(loaded: List<AppInfo>): List<DockItem?> {
         val byPkg = loaded.associateBy { it.packageName }
-        val defaults = dockDefaults.mapNotNull { byPkg[it] }
-        val defaultPkgs = defaults.map { it.packageName }.toSet()
-        val favApps = favs.mapNotNull { byPkg[it] }.filter { it.packageName !in defaultPkgs }
-        return (defaults + favApps).distinctBy { it.packageName }.take(6)
+        val items = dockEntries.map { entry ->
+            when (entry) {
+                DockEntry.Empty -> null
+                is DockEntry.App -> byPkg[entry.packageName]?.let(DockItem::App)
+                is DockEntry.Folder -> DockItem.Folder(
+                    id = entry.id,
+                    name = entry.name,
+                    apps = entry.packageNames.mapNotNull { byPkg[it] }
+                )
+            }
+        }
+        return (items + List((DOCK_SLOT_COUNT - items.size).coerceAtLeast(0)) { null })
+            .take(DOCK_SLOT_COUNT)
+    }
+
+    private fun defaultDockEntries(): MutableList<DockEntry> {
+        val entries = mutableListOf<DockEntry>()
+        repo.defaultDockPackages()
+            .take(DOCK_SLOT_COUNT)
+            .mapTo(entries) { DockEntry.App(it) }
+        while (entries.size < DOCK_SLOT_COUNT) entries.add(DockEntry.Empty)
+        return entries
+    }
+
+    fun setDockApp(slot: Int, app: AppInfo) {
+        updateDockSlot(slot, DockEntry.App(app.packageName))
+    }
+
+    fun setDockFolder(slot: Int, name: String, packageNames: List<String>) {
+        if (packageNames.isEmpty()) return
+        val currentId = (dockEntries.getOrNull(slot) as? DockEntry.Folder)?.id
+        updateDockSlot(
+            slot,
+            DockEntry.Folder(
+                id = currentId ?: UUID.randomUUID().toString(),
+                name = name.trim().ifBlank { "フォルダ" },
+                packageNames = packageNames.distinct()
+            )
+        )
+    }
+
+    fun clearDockSlot(slot: Int) = updateDockSlot(slot, DockEntry.Empty)
+
+    fun moveDockItem(from: Int, to: Int) {
+        if (from !in 0 until DOCK_SLOT_COUNT || to !in 0 until DOCK_SLOT_COUNT || from == to) return
+        while (dockEntries.size < DOCK_SLOT_COUNT) dockEntries.add(DockEntry.Empty)
+        val moving = dockEntries.removeAt(from)
+        dockEntries.add(to, moving)
+        persistDock()
+    }
+
+    fun mergeDockItems(from: Int, to: Int) {
+        if (from !in 0 until DOCK_SLOT_COUNT || to !in 0 until DOCK_SLOT_COUNT || from == to) return
+        while (dockEntries.size < DOCK_SLOT_COUNT) dockEntries.add(DockEntry.Empty)
+        val source = dockEntries[from] as? DockEntry.App ?: return
+        when (val target = dockEntries[to]) {
+            DockEntry.Empty -> {
+                dockEntries[to] = source
+                dockEntries[from] = DockEntry.Empty
+            }
+            is DockEntry.App -> {
+                dockEntries[to] = DockEntry.Folder(
+                    id = UUID.randomUUID().toString(),
+                    name = "フォルダ",
+                    packageNames = listOf(target.packageName, source.packageName).distinct()
+                )
+                dockEntries[from] = DockEntry.Empty
+            }
+            is DockEntry.Folder -> {
+                dockEntries[to] = target.copy(
+                    packageNames = (target.packageNames + source.packageName).distinct()
+                )
+                dockEntries[from] = DockEntry.Empty
+            }
+        }
+        persistDock()
+    }
+
+    private fun updateDockSlot(slot: Int, entry: DockEntry) {
+        if (slot !in 0 until DOCK_SLOT_COUNT) return
+        while (dockEntries.size < DOCK_SLOT_COUNT) dockEntries.add(DockEntry.Empty)
+        dockEntries[slot] = entry
+        persistDock()
+    }
+
+    private fun persistDock() {
+        _dock.value = buildDock(_apps.value)
+        val snapshot = dockEntries.toList()
+        viewModelScope.launch(Dispatchers.IO) { storage.saveDock(snapshot) }
     }
 
     private fun lastUsed(app: AppInfo): Long =
@@ -392,5 +482,6 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         private const val NEWS_TTL_MS = 15L * 60 * 1000
         private const val WEATHER_TTL_MS = 10L * 60 * 1000
         private const val TODOIST_TTL_MS = 5L * 60 * 1000
+        private const val DOCK_SLOT_COUNT = 4
     }
 }

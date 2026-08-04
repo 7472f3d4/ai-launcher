@@ -74,6 +74,7 @@ import com.g7r.ailauncher.data.WeatherCodes
 import com.g7r.ailauncher.data.WeatherState
 import com.g7r.ailauncher.data.WidgetHostManager
 import com.g7r.ailauncher.ui.components.AppGridItem
+import com.g7r.ailauncher.ui.components.EditableDock
 import com.g7r.ailauncher.ui.components.WidgetCanvas
 import com.g7r.ailauncher.ui.components.WidgetPickerSheet
 import kotlinx.coroutines.delay
@@ -90,6 +91,7 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     val recommendations by viewModel.recommendations.collectAsState()
+    val apps by viewModel.apps.collectAsState()
     val favoritesList by viewModel.favorites.collectAsState()
     val dock by viewModel.dock.collectAsState()
     val weather by viewModel.weather.collectAsState()
@@ -150,6 +152,10 @@ fun HomeScreen(
                 host = widgetHost,
                 selectedId = selectedWidget,
                 onSelect = { selectedWidget = it },
+                onLongPressEmptySpace = {
+                    selectedWidget = null
+                    showEditMenu = true
+                },
                 onMove = viewModel::moveWidget,
                 onResize = viewModel::resizeWidget,
                 onRemove = { id ->
@@ -170,15 +176,17 @@ fun HomeScreen(
                 onAppInfo = viewModel::openAppInfo
             )
             Spacer(Modifier.height(18.dp))
-            if (dock.isNotEmpty()) {
-                DockRow(
-                    dock = dock,
-                    favorites = favorites,
-                    onLaunch = viewModel::onLaunch,
-                    onToggleFavorite = viewModel::toggleFavorite,
-                    onAppInfo = viewModel::openAppInfo
-                )
-            }
+            EditableDock(
+                dock = dock,
+                apps = apps,
+                onLaunch = viewModel::onLaunch,
+                onSetApp = viewModel::setDockApp,
+                onSetFolder = viewModel::setDockFolder,
+                onClear = viewModel::clearDockSlot,
+                onMove = viewModel::moveDockItem,
+                onMerge = viewModel::mergeDockItems,
+                onAppInfo = viewModel::openAppInfo
+            )
             Spacer(Modifier.height(10.dp))
         }
 
@@ -619,35 +627,6 @@ private fun RecommendedSection(
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun DockRow(
-    dock: List<AppInfo>,
-    favorites: Set<String>,
-    onLaunch: (AppInfo) -> Unit,
-    onToggleFavorite: (String) -> Unit,
-    onAppInfo: (String) -> Unit
-) {
-    val dockLabelStyle = MaterialTheme.typography.labelMedium
-    val onBackground = MaterialTheme.colorScheme.onBackground
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceEvenly
-    ) {
-        dock.forEach { app ->
-            AppGridItem(
-                app = app,
-                isFavorite = app.packageName in favorites,
-                onLaunch = onLaunch,
-                onToggleFavorite = onToggleFavorite,
-                onAppInfo = onAppInfo,
-                iconSize = 56.dp,
-                labelColor = onBackground,
-                labelStyle = dockLabelStyle
-            )
         }
     }
 }

@@ -39,3 +39,27 @@ data class CategorySection(
     val category: AppCategory,
     val apps: List<AppInfo>
 )
+
+/** Persisted configuration for one of the four home-screen dock slots. */
+sealed interface DockEntry {
+    data object Empty : DockEntry
+
+    data class App(val packageName: String) : DockEntry
+
+    data class Folder(
+        val id: String,
+        val name: String,
+        val packageNames: List<String>
+    ) : DockEntry
+}
+
+/** A dock entry resolved against the apps currently installed on the device. */
+sealed interface DockItem {
+    data class App(val app: AppInfo) : DockItem
+
+    data class Folder(
+        val id: String,
+        val name: String,
+        val apps: List<AppInfo>
+    ) : DockItem
+}
