@@ -37,7 +37,3 @@ APK をインストール、または上書きインストールしたあとは�
 
 - Android 12 (API 31) 以上
 - ビルドには AGP 9 系 + Kotlin（Kotlin Gradle Plugin は `kotlin-android` ではなく AGP 組み込みの Kotlin サポートを使用）
-
-## ライセンス
-
-MIT License
