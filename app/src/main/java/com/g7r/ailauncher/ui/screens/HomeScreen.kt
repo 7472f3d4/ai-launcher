@@ -2,6 +2,9 @@ package com.g7r.ailauncher.ui.screens
 
 import android.Manifest
 import android.appwidget.AppWidgetProviderInfo
+import android.content.pm.LauncherApps
+import android.os.Process
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -69,12 +72,14 @@ import androidx.compose.ui.unit.dp
 import com.g7r.ailauncher.LauncherViewModel
 import com.g7r.ailauncher.data.AppInfo
 import com.g7r.ailauncher.data.CalEvent
+import com.g7r.ailauncher.data.DockShortcutEntry
 import com.g7r.ailauncher.data.ExternalApps
 import com.g7r.ailauncher.data.WeatherCodes
 import com.g7r.ailauncher.data.WeatherState
 import com.g7r.ailauncher.data.WidgetHostManager
 import com.g7r.ailauncher.ui.components.AppGridItem
 import com.g7r.ailauncher.ui.components.EditableDock
+import com.g7r.ailauncher.ui.components.ShortcutFolderDockButton
 import com.g7r.ailauncher.ui.components.WidgetCanvas
 import com.g7r.ailauncher.ui.components.WidgetPickerSheet
 import kotlinx.coroutines.delay
@@ -90,17 +95,41 @@ fun HomeScreen(
     onAddWidget: (AppWidgetProviderInfo) -> Unit
 ) {
     val context = LocalContext.current
+    val launcherApps = remember(context) { context.getSystemService(LauncherApps::class.java) }
     val recommendations by viewModel.recommendations.collectAsState()
     val apps by viewModel.apps.collectAsState()
     val favoritesList by viewModel.favorites.collectAsState()
     val dock by viewModel.dock.collectAsState()
+    val shortcutPackages by viewModel.homeShortcuts.collectAsState()
+    val pinnedShortcuts by viewModel.pinnedHomeShortcuts.collectAsState()
     val weather by viewModel.weather.collectAsState()
     val todayEvents by viewModel.todayEvents.collectAsState()
     val calendarPermission by viewModel.calendarPermission.collectAsState()
     val widgets by viewModel.widgets.collectAsState()
     val newsEnabled by viewModel.newsEnabled.collectAsState()
     val favorites = favoritesList.toSet()
-
+    val showShortcutFolder = shortcutPackages.any { packageName ->
+        apps.any { it.packageName == packageName }
+    } || pinnedShortcuts.isNotEmpty()
+    val launchDockShortcut: (DockShortcutEntry) -> Unit = { shortcut ->
+        if (shortcut.shortcutId == null) {
+            apps.firstOrNull { it.packageName == shortcut.packageName }?.let(viewModel::onLaunch)
+                ?: Toast.makeText(context, "アプリを開けませんでした", Toast.LENGTH_SHORT).show()
+        } else {
+            val result = runCatching {
+                launcherApps?.startShortcut(
+                    shortcut.packageName,
+                    shortcut.shortcutId,
+                    null,
+                    null,
+                    Process.myUserHandle()
+                ) ?: error("LauncherApps is unavailable")
+            }
+            if (result.isFailure) {
+                Toast.makeText(context, "ショートカットを開けませんでした", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
     var showEditMenu by remember { mutableStateOf(false) }
     var showWidgetPicker by remember { mutableStateOf(false) }
     var showHomeSettings by remember { mutableStateOf(false) }
@@ -176,17 +205,42 @@ fun HomeScreen(
                 onAppInfo = viewModel::openAppInfo
             )
             Spacer(Modifier.height(18.dp))
-            EditableDock(
-                dock = dock,
-                apps = apps,
-                onLaunch = viewModel::onLaunch,
-                onSetApp = viewModel::setDockApp,
-                onSetFolder = viewModel::setDockFolder,
-                onClear = viewModel::clearDockSlot,
-                onMove = viewModel::moveDockItem,
-                onMerge = viewModel::mergeDockItems,
-                onAppInfo = viewModel::openAppInfo
-            )
+            if (showShortcutFolder) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    EditableDock(
+                        dock = dock,
+                        apps = apps,
+                        onLaunch = viewModel::onLaunch,
+                        onLaunchShortcut = launchDockShortcut,
+                        onRemoveFolderShortcut = viewModel::moveDockShortcutToShortcutsPage,
+                        onSetApp = viewModel::setDockApp,
+                        onSetFolder = viewModel::setDockFolder,
+                        onClear = viewModel::clearDockSlot,
+                        onMove = viewModel::moveDockItem,
+                        onMerge = viewModel::mergeDockItems,
+                        onAppInfo = viewModel::openAppInfo,
+                        modifier = Modifier.weight(4f)
+                    )
+                    ShortcutFolderDockButton(
+                        onClick = viewModel::requestShortcutsPage,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            } else {
+                EditableDock(
+                    dock = dock,
+                    apps = apps,
+                    onLaunch = viewModel::onLaunch,
+                    onLaunchShortcut = launchDockShortcut,
+                    onRemoveFolderShortcut = viewModel::moveDockShortcutToShortcutsPage,
+                    onSetApp = viewModel::setDockApp,
+                    onSetFolder = viewModel::setDockFolder,
+                    onClear = viewModel::clearDockSlot,
+                    onMove = viewModel::moveDockItem,
+                    onMerge = viewModel::mergeDockItems,
+                    onAppInfo = viewModel::openAppInfo
+                )
+            }
             Spacer(Modifier.height(10.dp))
         }
 

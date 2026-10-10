@@ -2,6 +2,8 @@ package com.g7r.ailauncher
 
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
+import android.content.pm.LauncherApps
+import android.content.pm.ShortcutInfo
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
@@ -11,8 +13,22 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.g7r.ailauncher.data.WidgetGrid
 import com.g7r.ailauncher.data.WidgetHostManager
+import com.g7r.ailauncher.ui.components.AppIconImage
 import com.g7r.ailauncher.ui.LauncherRoot
 import com.g7r.ailauncher.ui.theme.AILauncherTheme
 import kotlin.math.ceil
@@ -22,6 +38,7 @@ class MainActivity : ComponentActivity() {
     private val viewModel: LauncherViewModel by viewModels()
     private lateinit var widgetHost: WidgetHostManager
     private var pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+    private var pendingPinConfirmation by mutableStateOf<PendingPinConfirmation?>(null)
 
     /** Step 3 (optional): the widget's own configuration activity finished. */
     private val configureLauncher = registerForActivityResult(
@@ -60,8 +77,44 @@ class MainActivity : ComponentActivity() {
         setContent {
             AILauncherTheme {
                 LauncherRoot(viewModel, widgetHost, onAddWidget = ::addWidget)
+                pendingPinConfirmation?.let { pending ->
+                    val launcherApps = getSystemService(LauncherApps::class.java)
+                    val icon = remember(pending.info) {
+                        runCatching {
+                            launcherApps?.getShortcutIconDrawable(
+                                pending.info,
+                                resources.displayMetrics.densityDpi
+                            )
+                        }.getOrNull()
+                    }
+                    val label = pending.info.shortLabel?.toString()?.takeIf(String::isNotBlank)
+                        ?: pending.info.longLabel?.toString()?.takeIf(String::isNotBlank)
+                        ?: pending.info.`package`
+                    AlertDialog(
+                        onDismissRequest = { pendingPinConfirmation = null },
+                        title = { Text("ホーム画面に追加") },
+                        text = {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                if (icon != null) AppIconImage(icon, 48.dp)
+                                Spacer(Modifier.height(8.dp))
+                                Text("「$label」をホーム画面に追加しますか？")
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { acceptPinnedShortcut(pending) }) {
+                                Text("追加")
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { pendingPinConfirmation = null }) {
+                                Text("キャンセル")
+                            }
+                        }
+                    )
+                }
             }
         }
+        handlePinShortcutIntent(intent)
         viewModel.refresh()
     }
 
@@ -84,7 +137,30 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        viewModel.requestHome()
+        if (!handlePinShortcutIntent(intent)) viewModel.requestHome()
+    }
+
+    private fun handlePinShortcutIntent(intent: Intent): Boolean {
+        if (intent.action != LauncherApps.ACTION_CONFIRM_PIN_SHORTCUT) return false
+        val launcherApps = getSystemService(LauncherApps::class.java) ?: return true
+        val request = runCatching { launcherApps.getPinItemRequest(intent) }.getOrNull() ?: return true
+        if (request.requestType != LauncherApps.PinItemRequest.REQUEST_TYPE_SHORTCUT) return true
+        val info = runCatching { request.shortcutInfo }.getOrNull() ?: return true
+        pendingPinConfirmation = PendingPinConfirmation(request, info)
+        return true
+    }
+
+    private fun acceptPinnedShortcut(pending: PendingPinConfirmation) {
+        val accepted = runCatching { pending.request.accept() }.getOrDefault(false)
+        if (accepted) {
+            val info = pending.info
+            val label = info.shortLabel?.toString()?.takeIf(String::isNotBlank)
+                ?: info.longLabel?.toString()?.takeIf(String::isNotBlank)
+                ?: info.`package`
+            viewModel.addPinnedHomeShortcut(info.`package`, info.id, label)
+            viewModel.requestShortcutsPage()
+        }
+        pendingPinConfirmation = null
     }
 
     /** Step 1: picker sheet selected a provider — bind (asking permission if needed). */
@@ -143,4 +219,9 @@ class MainActivity : ComponentActivity() {
             .coerceIn(1, 4)
         viewModel.addWidget(id, spanW, spanH)
     }
+
+    private data class PendingPinConfirmation(
+        val request: LauncherApps.PinItemRequest,
+        val info: ShortcutInfo
+    )
 }

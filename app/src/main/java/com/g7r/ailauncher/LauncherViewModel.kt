@@ -12,11 +12,14 @@ import com.g7r.ailauncher.data.AppStat
 import com.g7r.ailauncher.data.CalEvent
 import com.g7r.ailauncher.data.CalendarRepository
 import com.g7r.ailauncher.data.CategorySection
+import com.g7r.ailauncher.data.CustomAppCategory
 import com.g7r.ailauncher.data.DockEntry
 import com.g7r.ailauncher.data.DockItem
+import com.g7r.ailauncher.data.DockShortcutEntry
 import com.g7r.ailauncher.data.LocationRepository
 import com.g7r.ailauncher.data.NewsItem
 import com.g7r.ailauncher.data.NewsRepository
+import com.g7r.ailauncher.data.PinnedHomeShortcut
 import com.g7r.ailauncher.data.Recommender
 import com.g7r.ailauncher.data.RuleBasedAiMessage
 import com.g7r.ailauncher.data.Storage
@@ -53,11 +56,20 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     private val _sections = MutableStateFlow<List<CategorySection>>(emptyList())
     val sections = _sections.asStateFlow()
 
+    private val _customCategories = MutableStateFlow<List<CustomAppCategory>>(emptyList())
+    val customCategories = _customCategories.asStateFlow()
+
     private val _favorites = MutableStateFlow<List<String>>(emptyList())
     val favorites = _favorites.asStateFlow()
 
     private val _dock = MutableStateFlow<List<DockItem?>>(List(DOCK_SLOT_COUNT) { null })
     val dock = _dock.asStateFlow()
+
+    private val _homeShortcuts = MutableStateFlow<List<String>>(emptyList())
+    val homeShortcuts = _homeShortcuts.asStateFlow()
+
+    private val _pinnedHomeShortcuts = MutableStateFlow<List<PinnedHomeShortcut>>(emptyList())
+    val pinnedHomeShortcuts = _pinnedHomeShortcuts.asStateFlow()
 
     private val _recentlyUsed = MutableStateFlow<List<AppInfo>>(emptyList())
     val recentlyUsed = _recentlyUsed.asStateFlow()
@@ -98,8 +110,13 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     private val _homeEvent = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val homeEvent = _homeEvent.asSharedFlow()
 
+    private val _shortcutsPageEvent = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val shortcutsPageEvent = _shortcutsPageEvent.asSharedFlow()
+
     private var stats: MutableMap<String, AppStat> = mutableMapOf()
     private var overrides: MutableMap<String, String> = mutableMapOf()
+    private var customCategoryAssignments: MutableMap<String, String> = mutableMapOf()
+    private var customCategoryEntries: MutableList<CustomAppCategory> = mutableListOf()
     private var usage: Map<String, UsageSignal> = emptyMap()
     private var dockEntries: MutableList<DockEntry> = mutableListOf()
     private var lastNews: Long = 0L
@@ -108,6 +125,11 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         _widgets.value = storage.loadWidgets()
+        customCategoryAssignments = storage.loadCustomCategoryAssignments()
+        customCategoryEntries = storage.loadCustomCategories()
+        _customCategories.value = customCategoryEntries.toList()
+        _homeShortcuts.value = storage.loadHomeShortcuts()
+        _pinnedHomeShortcuts.value = storage.loadPinnedHomeShortcuts()
     }
 
     fun refresh() {
@@ -118,7 +140,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
             usage = UsageStatsHelper.loadUsage(appContext)
             _usageAccess.value = UsageStatsHelper.hasPermission(appContext)
             _newsEnabled.value = storage.loadNewsEnabled()
-            val loaded = repo.loadApps(overrides)
+            val loaded = repo.loadApps(overrides, customCategoryAssignments)
             val savedDock = storage.loadDock()
             dockEntries = savedDock ?: defaultDockEntries()
             if (savedDock == null) storage.saveDock(dockEntries)
@@ -335,7 +357,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
                 is DockEntry.Folder -> DockItem.Folder(
                     id = entry.id,
                     name = entry.name,
-                    apps = entry.packageNames.mapNotNull { byPkg[it] }
+                    apps = entry.packageNames.mapNotNull { byPkg[it] },
+                    shortcuts = entry.shortcuts
                 )
             }
         }
@@ -358,13 +381,14 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setDockFolder(slot: Int, name: String, packageNames: List<String>) {
         if (packageNames.isEmpty()) return
-        val currentId = (dockEntries.getOrNull(slot) as? DockEntry.Folder)?.id
+        val current = dockEntries.getOrNull(slot) as? DockEntry.Folder
         updateDockSlot(
             slot,
             DockEntry.Folder(
-                id = currentId ?: UUID.randomUUID().toString(),
+                id = current?.id ?: UUID.randomUUID().toString(),
                 name = name.trim().ifBlank { "フォルダ" },
-                packageNames = packageNames.distinct()
+                packageNames = packageNames.distinct(),
+                shortcuts = current?.shortcuts.orEmpty()
             )
         )
     }
@@ -409,6 +433,13 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     private fun updateDockSlot(slot: Int, entry: DockEntry) {
         if (slot !in 0 until DOCK_SLOT_COUNT) return
         while (dockEntries.size < DOCK_SLOT_COUNT) dockEntries.add(DockEntry.Empty)
+        val oldFolder = dockEntries[slot] as? DockEntry.Folder
+        val newFolder = entry as? DockEntry.Folder
+        oldFolder?.shortcuts
+            ?.filterNot { oldShortcut ->
+                newFolder?.shortcuts?.any { it.id == oldShortcut.id } == true
+            }
+            ?.forEach(::restoreDockShortcutToShortcutsPage)
         dockEntries[slot] = entry
         persistDock()
     }
@@ -428,12 +459,29 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         val recent = loaded
             .filter { it.firstInstallTime in (recentWindow + 1)..now }
             .sortedByDescending { it.firstInstallTime }
-        if (recent.isNotEmpty()) out.add(CategorySection(AppCategory.RECENTLY_ADDED, recent))
-        val byCat = loaded.groupBy { it.category }
+        if (recent.isNotEmpty()) {
+            out.add(
+                CategorySection(
+                    id = "builtin:${AppCategory.RECENTLY_ADDED.name}",
+                    displayName = AppCategory.RECENTLY_ADDED.displayName,
+                    apps = recent
+                )
+            )
+        }
+        val builtInApps = loaded.filter { it.customCategoryId == null }
+        val byCat = builtInApps.groupBy { it.category }
         for (cat in AppCategory.entries) {
             if (cat == AppCategory.RECENTLY_ADDED) continue
             val items = byCat[cat]?.sortedBy { it.label.lowercase() }
-            if (!items.isNullOrEmpty()) out.add(CategorySection(cat, items))
+            if (!items.isNullOrEmpty()) {
+                out.add(CategorySection("builtin:${cat.name}", cat.displayName, items))
+            }
+        }
+        for (customCategory in customCategoryEntries) {
+            val items = loaded
+                .filter { it.customCategoryId == customCategory.id }
+                .sortedBy { it.label.lowercase() }
+            out.add(CategorySection("custom:${customCategory.id}", customCategory.name, items))
         }
         return out
     }
@@ -460,13 +508,154 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     fun isFavorite(packageName: String): Boolean = _favorites.value.contains(packageName)
 
     fun setCategory(packageName: String, category: AppCategory) {
+        customCategoryAssignments.remove(packageName)
         overrides[packageName] = category.name
         viewModelScope.launch(Dispatchers.IO) {
             storage.saveOverrides(overrides)
-            val loaded = repo.loadApps(overrides)
+            storage.saveCustomCategoryAssignments(customCategoryAssignments)
+            val loaded = repo.loadApps(overrides, customCategoryAssignments)
             _apps.value = loaded
             recompute(loaded, _favorites.value)
         }
+    }
+
+    fun createCustomCategory(name: String): Boolean {
+        val cleanName = name.trim()
+        if (cleanName.isEmpty() || customCategoryEntries.any { it.name.equals(cleanName, ignoreCase = true) }) {
+            return false
+        }
+        val updated = customCategoryEntries + CustomAppCategory(UUID.randomUUID().toString(), cleanName)
+        customCategoryEntries = updated.toMutableList()
+        _customCategories.value = updated
+        viewModelScope.launch(Dispatchers.IO) { storage.saveCustomCategories(updated) }
+        recompute(_apps.value, _favorites.value)
+        return true
+    }
+
+    fun setCustomCategory(packageName: String, categoryId: String) {
+        if (customCategoryEntries.none { it.id == categoryId }) return
+        customCategoryAssignments[packageName] = categoryId
+        viewModelScope.launch(Dispatchers.IO) {
+            storage.saveCustomCategoryAssignments(customCategoryAssignments)
+            val loaded = repo.loadApps(overrides, customCategoryAssignments)
+            _apps.value = loaded
+            recompute(loaded, _favorites.value)
+        }
+    }
+
+    fun addHomeShortcut(packageName: String) {
+        if (_apps.value.none { it.packageName == packageName }) return
+        if (packageName in _homeShortcuts.value) return
+        val updated = _homeShortcuts.value + packageName
+        _homeShortcuts.value = updated
+        viewModelScope.launch(Dispatchers.IO) { storage.saveHomeShortcuts(updated) }
+    }
+
+    fun removeHomeShortcut(packageName: String) {
+        val updated = _homeShortcuts.value.filterNot { it == packageName }
+        if (updated == _homeShortcuts.value) return
+        _homeShortcuts.value = updated
+        viewModelScope.launch(Dispatchers.IO) { storage.saveHomeShortcuts(updated) }
+    }
+
+    fun addPinnedHomeShortcut(packageName: String, shortcutId: String, label: String) {
+        val shortcut = PinnedHomeShortcut(
+            instanceId = UUID.randomUUID().toString(),
+            packageName = packageName,
+            shortcutId = shortcutId,
+            label = label
+        )
+        val updated = _pinnedHomeShortcuts.value + shortcut
+        _pinnedHomeShortcuts.value = updated
+        storage.savePinnedHomeShortcuts(updated)
+    }
+
+    fun removePinnedHomeShortcut(instanceId: String) {
+        val updated = _pinnedHomeShortcuts.value.filterNot { it.instanceId == instanceId }
+        if (updated == _pinnedHomeShortcuts.value) return
+        _pinnedHomeShortcuts.value = updated
+        storage.savePinnedHomeShortcuts(updated)
+    }
+
+    fun moveHomeShortcutIntoFolder(packageName: String, folderId: String) {
+        val app = _apps.value.firstOrNull { it.packageName == packageName } ?: return
+        val entry = DockShortcutEntry(
+            id = "app:${app.packageName}",
+            packageName = app.packageName,
+            shortcutId = null,
+            label = app.label
+        )
+        if (!appendShortcutToFolder(folderId, entry)) return
+
+        val updated = _homeShortcuts.value.filterNot { it == packageName }
+        _homeShortcuts.value = updated
+        viewModelScope.launch(Dispatchers.IO) { storage.saveHomeShortcuts(updated) }
+    }
+
+    fun movePinnedShortcutIntoFolder(instanceId: String, folderId: String) {
+        val shortcut = _pinnedHomeShortcuts.value.firstOrNull { it.instanceId == instanceId } ?: return
+        val entry = DockShortcutEntry(
+            id = "pin:${shortcut.instanceId}",
+            packageName = shortcut.packageName,
+            shortcutId = shortcut.shortcutId,
+            label = shortcut.label
+        )
+        if (!appendShortcutToFolder(folderId, entry)) return
+
+        val updated = _pinnedHomeShortcuts.value.filterNot { it.instanceId == instanceId }
+        _pinnedHomeShortcuts.value = updated
+        storage.savePinnedHomeShortcuts(updated)
+    }
+
+    fun moveDockShortcutToShortcutsPage(folderId: String, shortcutId: String) {
+        val folderIndex = dockEntries.indexOfFirst {
+            it is DockEntry.Folder && it.id == folderId
+        }
+        if (folderIndex < 0) return
+        val folder = dockEntries[folderIndex] as DockEntry.Folder
+        val shortcut = folder.shortcuts.firstOrNull { it.id == shortcutId } ?: return
+        dockEntries[folderIndex] = folder.copy(
+            shortcuts = folder.shortcuts.filterNot { it.id == shortcutId }
+        )
+        persistDock()
+
+        restoreDockShortcutToShortcutsPage(shortcut)
+    }
+
+    private fun restoreDockShortcutToShortcutsPage(shortcut: DockShortcutEntry) {
+        if (shortcut.shortcutId == null) {
+            if (shortcut.packageName !in _homeShortcuts.value &&
+                _apps.value.any { it.packageName == shortcut.packageName }
+            ) {
+                val updated = _homeShortcuts.value + shortcut.packageName
+                _homeShortcuts.value = updated
+                viewModelScope.launch(Dispatchers.IO) { storage.saveHomeShortcuts(updated) }
+            }
+        } else {
+            val instanceId = shortcut.id.removePrefix("pin:")
+            if (_pinnedHomeShortcuts.value.none { it.instanceId == instanceId }) {
+                val updated = _pinnedHomeShortcuts.value + PinnedHomeShortcut(
+                    instanceId = instanceId,
+                    packageName = shortcut.packageName,
+                    shortcutId = shortcut.shortcutId,
+                    label = shortcut.label
+                )
+                _pinnedHomeShortcuts.value = updated
+                storage.savePinnedHomeShortcuts(updated)
+            }
+        }
+    }
+
+    private fun appendShortcutToFolder(folderId: String, shortcut: DockShortcutEntry): Boolean {
+        val folderIndex = dockEntries.indexOfFirst {
+            it is DockEntry.Folder && it.id == folderId
+        }
+        if (folderIndex < 0) return false
+        val folder = dockEntries[folderIndex] as DockEntry.Folder
+        if (folder.shortcuts.any { it.id == shortcut.id }) return false
+        dockEntries[folderIndex] = folder.copy(shortcuts = folder.shortcuts + shortcut)
+        persistDock()
+        return true
     }
 
     fun openAppInfo(packageName: String) = repo.openAppInfo(packageName)
@@ -475,6 +664,10 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
 
     fun requestHome() {
         _homeEvent.tryEmit(Unit)
+    }
+
+    fun requestShortcutsPage() {
+        _shortcutsPageEvent.tryEmit(Unit)
     }
 
     companion object {

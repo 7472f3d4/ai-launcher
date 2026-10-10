@@ -16,7 +16,10 @@ class AppRepository(context: Context) {
     private val pm: PackageManager = appContext.packageManager
 
     @Suppress("DEPRECATION")
-    fun loadApps(overrides: Map<String, String>): List<AppInfo> {
+    fun loadApps(
+        overrides: Map<String, String>,
+        customCategoryAssignments: Map<String, String> = emptyMap()
+    ): List<AppInfo> {
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val resolveInfos = pm.queryIntentActivities(intent, 0)
         val myPkg = appContext.packageName
@@ -39,7 +42,8 @@ class AppRepository(context: Context) {
                     icon = icon,
                     category = category,
                     firstInstallTime = firstInstall,
-                    isSystem = isSystem
+                    isSystem = isSystem,
+                    customCategoryId = customCategoryAssignments[pkg]
                 )
             )
         }

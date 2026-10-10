@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Category
+import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
@@ -46,7 +47,8 @@ fun AppGridItem(
     showLabel: Boolean = true,
     labelStyle: TextStyle? = null,
     labelColor: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.onSurface,
-    onChangeCategory: ((AppInfo) -> Unit)? = null
+    onChangeCategory: ((AppInfo) -> Unit)? = null,
+    onAddToHome: ((AppInfo) -> Unit)? = null
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Column(
@@ -84,6 +86,13 @@ fun AppGridItem(
                     text = { Text("カテゴリを変更") },
                     leadingIcon = { Icon(Icons.Rounded.Category, null) },
                     onClick = { onChangeCategory(app); menuOpen = false }
+                )
+            }
+            if (onAddToHome != null) {
+                DropdownMenuItem(
+                    text = { Text("ホーム画面に追加") },
+                    leadingIcon = { Icon(Icons.Rounded.Home, null) },
+                    onClick = { onAddToHome(app); menuOpen = false }
                 )
             }
             DropdownMenuItem(

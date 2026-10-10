@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -59,6 +60,7 @@ import com.g7r.ailauncher.LauncherViewModel
 import com.g7r.ailauncher.data.AppCategory
 import com.g7r.ailauncher.data.AppInfo
 import com.g7r.ailauncher.data.CategorySection
+import com.g7r.ailauncher.data.CustomAppCategory
 import com.g7r.ailauncher.data.SuggestRepository
 import com.g7r.ailauncher.ui.components.AppGridItem
 import com.g7r.ailauncher.ui.components.AppIconImage
@@ -71,13 +73,15 @@ import java.net.URLEncoder
 fun AppListScreen(viewModel: LauncherViewModel, onClose: () -> Unit) {
     val sections by viewModel.sections.collectAsState()
     val apps by viewModel.apps.collectAsState()
+    val customCategories by viewModel.customCategories.collectAsState()
     val favoritesList by viewModel.favorites.collectAsState()
     val favorites = favoritesList.toSet()
     val context = LocalContext.current
 
     var query by remember { mutableStateOf("") }
-    var selectedCategory by remember { mutableStateOf<AppCategory?>(null) }
+    var selectedCategory by remember { mutableStateOf<String?>(null) }
     var categoryDialogApp by remember { mutableStateOf<AppInfo?>(null) }
+    var showCreateCategoryDialog by remember { mutableStateOf(false) }
     var suggestions by remember { mutableStateOf(emptyList<String>()) }
 
     // Launch resets the drawer to its initial state so the next open starts fresh.
@@ -92,6 +96,12 @@ fun AppListScreen(viewModel: LauncherViewModel, onClose: () -> Unit) {
         selectedCategory = null
         query = ""
         onClose()
+    }
+    val addToHome: (AppInfo) -> Unit = { app ->
+        viewModel.addHomeShortcut(app.packageName)
+        viewModel.requestShortcutsPage()
+        selectedCategory = null
+        query = ""
     }
 
     LaunchedEffect(query) {
@@ -130,12 +140,21 @@ fun AppListScreen(viewModel: LauncherViewModel, onClose: () -> Unit) {
             val active = selectedCategory
             if (active == null) {
                 Spacer(Modifier.height(12.dp))
-                Text(
-                    "アプリ一覧",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "アプリ一覧",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    IconButton(onClick = { showCreateCategoryDialog = true }) {
+                        Icon(Icons.Rounded.Add, contentDescription = "カテゴリを作成")
+                    }
+                }
                 Spacer(Modifier.height(12.dp))
                 SearchField(query) { query = it }
                 Spacer(Modifier.height(12.dp))
@@ -158,12 +177,13 @@ fun AppListScreen(viewModel: LauncherViewModel, onClose: () -> Unit) {
                         viewModel = viewModel,
                         bottomInset = bottomInset,
                         onChangeCategory = { categoryDialogApp = it },
+                        onAddToHome = addToHome,
                         onLaunch = launchApp,
                         onWeb = openWeb
                     )
                 }
             } else {
-                val section = sections.firstOrNull { it.category == active }
+                val section = sections.firstOrNull { it.id == active }
                 CategoryDetail(
                     section = section,
                     favorites = favorites,
@@ -171,6 +191,7 @@ fun AppListScreen(viewModel: LauncherViewModel, onClose: () -> Unit) {
                     bottomInset = bottomInset,
                     onBack = { selectedCategory = null },
                     onChangeCategory = { categoryDialogApp = it },
+                    onAddToHome = addToHome,
                     onLaunch = launchApp
                 )
             }
@@ -180,10 +201,27 @@ fun AppListScreen(viewModel: LauncherViewModel, onClose: () -> Unit) {
     categoryDialogApp?.let { app ->
         CategoryPickerDialog(
             app = app,
+            customCategories = customCategories,
             onDismiss = { categoryDialogApp = null },
             onPick = { category ->
                 viewModel.setCategory(app.packageName, category)
                 categoryDialogApp = null
+                selectedCategory = null
+            },
+            onPickCustom = { categoryId ->
+                viewModel.setCustomCategory(app.packageName, categoryId)
+                categoryDialogApp = null
+                selectedCategory = null
+            }
+        )
+    }
+    if (showCreateCategoryDialog) {
+        CreateCategoryDialog(
+            onDismiss = { showCreateCategoryDialog = false },
+            onCreate = { name ->
+                val created = viewModel.createCustomCategory(name)
+                if (created) showCreateCategoryDialog = false
+                created
             }
         )
     }
@@ -213,7 +251,7 @@ private fun SearchField(query: String, onChange: (String) -> Unit) {
 private fun CategoryGrid(
     sections: List<CategorySection>,
     bottomInset: androidx.compose.ui.unit.Dp,
-    onSelect: (AppCategory) -> Unit
+    onSelect: (String) -> Unit
 ) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
@@ -221,8 +259,8 @@ private fun CategoryGrid(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(bottom = bottomInset + 16.dp)
     ) {
-        items(sections, key = { it.category.name }) { section ->
-            CategoryCard(section = section, onClick = { onSelect(section.category) })
+        items(sections, key = { it.id }) { section ->
+            CategoryCard(section = section, onClick = { onSelect(section.id) })
         }
     }
 }
@@ -241,7 +279,7 @@ private fun CategoryCard(section: CategorySection, onClick: () -> Unit) {
     ) {
         Column(Modifier.padding(16.dp)) {
             Text(
-                section.category.displayName,
+                section.displayName,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -285,6 +323,7 @@ private fun CategoryDetail(
     bottomInset: androidx.compose.ui.unit.Dp,
     onBack: () -> Unit,
     onChangeCategory: (AppInfo) -> Unit,
+    onAddToHome: (AppInfo) -> Unit,
     onLaunch: (AppInfo) -> Unit
 ) {
     Column(Modifier.fillMaxSize()) {
@@ -294,7 +333,7 @@ private fun CategoryDetail(
             }
             Spacer(Modifier.width(4.dp))
             Text(
-                section?.category?.displayName ?: "",
+                section?.displayName ?: "",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onBackground
@@ -307,6 +346,7 @@ private fun CategoryDetail(
             viewModel = viewModel,
             bottomInset = bottomInset,
             onChangeCategory = onChangeCategory,
+            onAddToHome = onAddToHome,
             onLaunch = onLaunch
         )
     }
@@ -319,6 +359,7 @@ private fun AppFlowGrid(
     viewModel: LauncherViewModel,
     bottomInset: androidx.compose.ui.unit.Dp,
     onChangeCategory: (AppInfo) -> Unit,
+    onAddToHome: (AppInfo) -> Unit,
     onLaunch: (AppInfo) -> Unit
 ) {
     LazyVerticalGrid(
@@ -335,7 +376,8 @@ private fun AppFlowGrid(
                 onToggleFavorite = viewModel::toggleFavorite,
                 onAppInfo = viewModel::openAppInfo,
                 iconSize = 52.dp,
-                onChangeCategory = onChangeCategory
+                onChangeCategory = onChangeCategory,
+                onAddToHome = onAddToHome
             )
         }
     }
@@ -351,6 +393,7 @@ private fun SearchResults(
     viewModel: LauncherViewModel,
     bottomInset: androidx.compose.ui.unit.Dp,
     onChangeCategory: (AppInfo) -> Unit,
+    onAddToHome: (AppInfo) -> Unit,
     onLaunch: (AppInfo) -> Unit,
     onWeb: (String) -> Unit
 ) {
@@ -368,7 +411,8 @@ private fun SearchResults(
                 onToggleFavorite = viewModel::toggleFavorite,
                 onAppInfo = viewModel::openAppInfo,
                 iconSize = 52.dp,
-                onChangeCategory = onChangeCategory
+                onChangeCategory = onChangeCategory,
+                onAddToHome = onAddToHome
             )
         }
         if (suggestions.isNotEmpty()) {
@@ -430,8 +474,10 @@ private fun openWebSearch(context: Context, q: String) {
 @Composable
 private fun CategoryPickerDialog(
     app: AppInfo,
+    customCategories: List<CustomAppCategory>,
     onDismiss: () -> Unit,
-    onPick: (AppCategory) -> Unit
+    onPick: (AppCategory) -> Unit,
+    onPickCustom: (String) -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -458,7 +504,70 @@ private fun CategoryPickerDialog(
                             Text(category.displayName)
                         }
                     }
+                if (customCategories.isNotEmpty()) {
+                    Text(
+                        "マイカテゴリ",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 12.dp, start = 12.dp)
+                    )
+                    customCategories.forEach { category ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { onPickCustom(category.id) }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = app.customCategoryId == category.id,
+                                onClick = { onPickCustom(category.id) }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(category.name)
+                        }
+                    }
+                }
             }
         }
+    )
+}
+
+@Composable
+private fun CreateCategoryDialog(
+    onDismiss: () -> Unit,
+    onCreate: (String) -> Boolean
+) {
+    var name by remember { mutableStateOf("") }
+    var showNameError by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("カテゴリを作成") },
+        text = {
+            Column {
+                TextField(
+                    value = name,
+                    onValueChange = {
+                        name = it
+                        showNameError = false
+                    },
+                    singleLine = true,
+                    label = { Text("カテゴリ名") }
+                )
+                if (showNameError) {
+                    Text(
+                        "名前が空か、同じ名前のカテゴリがあります",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (name.isBlank() || !onCreate(name)) showNameError = true
+            }) { Text("作成") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("キャンセル") } }
     )
 }

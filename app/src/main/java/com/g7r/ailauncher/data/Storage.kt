@@ -58,11 +58,27 @@ class Storage(context: Context) {
                         val packageNames = buildList {
                             for (j in 0 until packages.length()) add(packages.getString(j))
                         }
+                        val shortcuts = item.optJSONArray("shortcuts") ?: JSONArray()
+                        val shortcutEntries = buildList {
+                            for (j in 0 until shortcuts.length()) {
+                                val shortcut = shortcuts.optJSONObject(j) ?: continue
+                                val id = shortcut.optString("id").trim()
+                                val packageName = shortcut.optString("packageName").trim()
+                                val label = shortcut.optString("label").trim()
+                                val shortcutId = shortcut.optString("shortcutId")
+                                    .trim()
+                                    .takeIf { it.isNotEmpty() }
+                                if (id.isNotEmpty() && packageName.isNotEmpty()) {
+                                    add(DockShortcutEntry(id, packageName, shortcutId, label))
+                                }
+                            }
+                        }
                         out.add(
                             DockEntry.Folder(
                                 id = item.getString("id"),
                                 name = item.optString("name").ifBlank { "フォルダ" },
-                                packageNames = packageNames.distinct()
+                                packageNames = packageNames.distinct(),
+                                shortcuts = shortcutEntries.distinctBy { it.id }
                             )
                         )
                     }
@@ -88,6 +104,17 @@ class Storage(context: Context) {
                     .put("id", entry.id)
                     .put("name", entry.name)
                     .put("packages", JSONArray(entry.packageNames))
+                    .put("shortcuts", JSONArray().apply {
+                        entry.shortcuts.forEach { shortcut ->
+                            put(
+                                JSONObject()
+                                    .put("id", shortcut.id)
+                                    .put("packageName", shortcut.packageName)
+                                    .put("shortcutId", shortcut.shortcutId)
+                                    .put("label", shortcut.label)
+                            )
+                        }
+                    })
             }
             arr.put(item)
         }
@@ -171,11 +198,110 @@ class Storage(context: Context) {
         prefs.edit().putString(KEY_OVERRIDES, obj.toString()).apply()
     }
 
+    // ---- user-created app categories and their package assignments ----
+    fun loadCustomCategories(): MutableList<CustomAppCategory> {
+        val raw = prefs.getString(KEY_CUSTOM_CATEGORIES, null) ?: return mutableListOf()
+        return runCatching {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val item = arr.getJSONObject(i)
+                    val id = item.optString("id").trim()
+                    val name = item.optString("name").trim()
+                    if (id.isNotEmpty() && name.isNotEmpty()) add(CustomAppCategory(id, name))
+                }
+            }.distinctBy { it.id }.toMutableList()
+        }.getOrDefault(mutableListOf())
+    }
+
+    fun saveCustomCategories(categories: List<CustomAppCategory>) {
+        val arr = JSONArray()
+        categories.forEach { category ->
+            arr.put(JSONObject().put("id", category.id).put("name", category.name))
+        }
+        prefs.edit().putString(KEY_CUSTOM_CATEGORIES, arr.toString()).apply()
+    }
+
+    fun loadCustomCategoryAssignments(): MutableMap<String, String> =
+        loadStringMap(KEY_CUSTOM_CATEGORY_ASSIGNMENTS)
+
+    fun saveCustomCategoryAssignments(assignments: Map<String, String>) {
+        saveStringMap(KEY_CUSTOM_CATEGORY_ASSIGNMENTS, assignments)
+    }
+
+    // ---- app shortcuts on the home screen ----
+    fun loadHomeShortcuts(): MutableList<String> {
+        val raw = prefs.getString(KEY_HOME_SHORTCUTS, null) ?: return mutableListOf()
+        return runCatching {
+            val arr = JSONArray(raw)
+            buildList { for (i in 0 until arr.length()) add(arr.getString(i)) }
+                .distinct()
+                .toMutableList()
+        }.getOrDefault(mutableListOf())
+    }
+
+    fun saveHomeShortcuts(packageNames: List<String>) {
+        prefs.edit().putString(KEY_HOME_SHORTCUTS, JSONArray(packageNames.distinct()).toString()).apply()
+    }
+
+    fun loadPinnedHomeShortcuts(): MutableList<PinnedHomeShortcut> {
+        val raw = prefs.getString(KEY_PINNED_HOME_SHORTCUTS, null) ?: return mutableListOf()
+        return runCatching {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i) ?: continue
+                    val instanceId = item.optString("instanceId").trim()
+                    val packageName = item.optString("packageName").trim()
+                    val shortcutId = item.optString("shortcutId").trim()
+                    val label = item.optString("label").trim()
+                    if (instanceId.isNotEmpty() && packageName.isNotEmpty() && shortcutId.isNotEmpty()) {
+                        add(PinnedHomeShortcut(instanceId, packageName, shortcutId, label))
+                    }
+                }
+            }.toMutableList()
+        }.getOrDefault(mutableListOf())
+    }
+
+    fun savePinnedHomeShortcuts(shortcuts: List<PinnedHomeShortcut>) {
+        val arr = JSONArray()
+        shortcuts.forEach { shortcut ->
+            arr.put(
+                JSONObject()
+                    .put("instanceId", shortcut.instanceId)
+                    .put("packageName", shortcut.packageName)
+                    .put("shortcutId", shortcut.shortcutId)
+                    .put("label", shortcut.label)
+            )
+        }
+        prefs.edit().putString(KEY_PINNED_HOME_SHORTCUTS, arr.toString()).apply()
+    }
+
+    private fun loadStringMap(key: String): MutableMap<String, String> {
+        val raw = prefs.getString(key, null) ?: return mutableMapOf()
+        return runCatching {
+            val obj = JSONObject(raw)
+            buildMap {
+                for (name in obj.keys()) put(name, obj.getString(name))
+            }.toMutableMap()
+        }.getOrDefault(mutableMapOf())
+    }
+
+    private fun saveStringMap(key: String, values: Map<String, String>) {
+        val obj = JSONObject()
+        for ((k, v) in values) obj.put(k, v)
+        prefs.edit().putString(key, obj.toString()).apply()
+    }
+
     companion object {
         private const val KEY_STATS = "stats"
         private const val KEY_FAVORITES = "favorites_ordered"
         private const val KEY_DOCK = "home_dock"
         private const val KEY_OVERRIDES = "overrides"
+        private const val KEY_CUSTOM_CATEGORIES = "custom_categories"
+        private const val KEY_CUSTOM_CATEGORY_ASSIGNMENTS = "custom_category_assignments"
+        private const val KEY_HOME_SHORTCUTS = "home_shortcuts"
+        private const val KEY_PINNED_HOME_SHORTCUTS = "pinned_home_shortcuts"
         private const val KEY_NEWS = "news_enabled"
         private const val KEY_WIDGETS = "widgets"
         private const val KEY_TODOIST_TOKEN = "todoist_token"

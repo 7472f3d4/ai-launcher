@@ -29,14 +29,38 @@ data class AppInfo(
     val icon: Drawable,
     val category: AppCategory,
     val firstInstallTime: Long,
-    val isSystem: Boolean
+    val isSystem: Boolean,
+    val customCategoryId: String? = null
 ) {
     val key: String get() = "$packageName/$activityName"
 }
 
+/** A user-created category shown alongside the built-in app categories. */
+data class CustomAppCategory(
+    val id: String,
+    val name: String
+)
+
+/** A user-pinned Android shortcut, identified by the publishing app and shortcut ID. */
+data class PinnedHomeShortcut(
+    val instanceId: String,
+    val packageName: String,
+    val shortcutId: String,
+    val label: String
+)
+
+/** A shortcut saved inside a dock folder. A null shortcutId launches the app itself. */
+data class DockShortcutEntry(
+    val id: String,
+    val packageName: String,
+    val shortcutId: String?,
+    val label: String
+)
+
 /** A category and the apps belonging to it, used to render the app-list cards. */
 data class CategorySection(
-    val category: AppCategory,
+    val id: String,
+    val displayName: String,
     val apps: List<AppInfo>
 )
 
@@ -49,7 +73,8 @@ sealed interface DockEntry {
     data class Folder(
         val id: String,
         val name: String,
-        val packageNames: List<String>
+        val packageNames: List<String>,
+        val shortcuts: List<DockShortcutEntry> = emptyList()
     ) : DockEntry
 }
 
@@ -60,6 +85,7 @@ sealed interface DockItem {
     data class Folder(
         val id: String,
         val name: String,
-        val apps: List<AppInfo>
+        val apps: List<AppInfo>,
+        val shortcuts: List<DockShortcutEntry> = emptyList()
     ) : DockItem
 }

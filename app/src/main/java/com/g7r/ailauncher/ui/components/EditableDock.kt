@@ -1,8 +1,10 @@
 package com.g7r.ailauncher.ui.components
 
+import android.graphics.drawable.Drawable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,6 +33,8 @@ import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -62,6 +66,7 @@ import androidx.compose.ui.zIndex
 import androidx.compose.ui.window.Dialog
 import com.g7r.ailauncher.data.AppInfo
 import com.g7r.ailauncher.data.DockItem
+import com.g7r.ailauncher.data.DockShortcutEntry
 import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.hypot
@@ -73,12 +78,15 @@ fun EditableDock(
     dock: List<DockItem?>,
     apps: List<AppInfo>,
     onLaunch: (AppInfo) -> Unit,
+    onLaunchShortcut: (DockShortcutEntry) -> Unit,
+    onRemoveFolderShortcut: (folderId: String, shortcutId: String) -> Unit,
     onSetApp: (slot: Int, app: AppInfo) -> Unit,
     onSetFolder: (slot: Int, name: String, packageNames: List<String>) -> Unit,
     onClear: (slot: Int) -> Unit,
     onMove: (from: Int, to: Int) -> Unit,
     onMerge: (from: Int, to: Int) -> Unit,
-    onAppInfo: (String) -> Unit
+    onAppInfo: (String) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var menuSlot by remember { mutableStateOf<Int?>(null) }
     var pickerSlot by remember { mutableStateOf<Int?>(null) }
@@ -97,7 +105,7 @@ fun EditableDock(
         .coerceAtLeast(minimumDeleteTravelPx)
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .onSizeChanged { dockWidthPx = it.width.toFloat() }
             .onGloballyPositioned { dockTopInRootPx = it.positionInRoot().y }
@@ -203,6 +211,9 @@ fun EditableDock(
                         )
                         is DockItem.Folder -> DockFolderTile(
                             folder = item,
+                            shortcutIcons = item.shortcuts.map { shortcut ->
+                                apps.firstOrNull { it.packageName == shortcut.packageName }?.icon
+                            },
                             modifier = Modifier
                                 .clickable { openFolderSlot = slot }
                                 .pointerInput(slot, dockWidthPx, item) {
@@ -303,6 +314,7 @@ fun EditableDock(
         if (folder != null) {
             FolderPopup(
                 folder = folder,
+                apps = apps,
                 onEdit = {
                     openFolderSlot = null
                     folderEditorSlot = slot
@@ -310,6 +322,13 @@ fun EditableDock(
                 onLaunch = { app ->
                     openFolderSlot = null
                     onLaunch(app)
+                },
+                onLaunchShortcut = { shortcut ->
+                    openFolderSlot = null
+                    onLaunchShortcut(shortcut)
+                },
+                onRemoveShortcut = { shortcutId ->
+                    onRemoveFolderShortcut(folder.id, shortcutId)
                 },
                 onDismiss = { openFolderSlot = null }
             )
@@ -398,13 +417,21 @@ private fun DockAppTile(app: AppInfo, modifier: Modifier = Modifier) {
 @Composable
 private fun DockFolderTile(
     folder: DockItem.Folder,
+    shortcutIcons: List<Drawable?>,
     modifier: Modifier = Modifier
 ) {
+    val previewIcons = if (shortcutIcons.isEmpty()) {
+        folder.apps.map { it.icon }
+    } else {
+        (folder.apps.take(2).map { it.icon } +
+            shortcutIcons +
+            folder.apps.drop(2).map { it.icon }).take(4)
+    }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = modifier.padding(vertical = 4.dp, horizontal = 2.dp)
     ) {
-        FolderIcon(folder.apps)
+        FolderIcon(previewIcons)
         Spacer(Modifier.height(5.dp))
         DockLabel(folder.name)
     }
@@ -451,7 +478,7 @@ private fun DockLabel(label: String) {
 }
 
 @Composable
-private fun FolderIcon(apps: List<AppInfo>, modifier: Modifier = Modifier) {
+private fun FolderIcon(icons: List<Drawable?>, modifier: Modifier = Modifier) {
     Surface(
         shape = CircleShape,
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -465,9 +492,9 @@ private fun FolderIcon(apps: List<AppInfo>, modifier: Modifier = Modifier) {
             repeat(2) { row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                     repeat(2) { col ->
-                        val app = apps.getOrNull(row * 2 + col)
-                        if (app != null) {
-                            AppIconImage(app.icon, 19.dp)
+                        val icon = icons.getOrNull(row * 2 + col)
+                        if (icon != null) {
+                            AppIconImage(icon, 19.dp)
                         } else {
                             Box(Modifier.size(19.dp))
                         }
@@ -662,8 +689,11 @@ private fun FolderEditorDialog(
 @Composable
 private fun FolderPopup(
     folder: DockItem.Folder,
+    apps: List<AppInfo>,
     onEdit: () -> Unit,
     onLaunch: (AppInfo) -> Unit,
+    onLaunchShortcut: (DockShortcutEntry) -> Unit,
+    onRemoveShortcut: (shortcutId: String) -> Unit,
     onDismiss: () -> Unit
 ) {
     Dialog(onDismissRequest = onDismiss) {
@@ -691,7 +721,7 @@ private fun FolderPopup(
                     }
                 }
                 Spacer(Modifier.height(14.dp))
-                if (folder.apps.isEmpty()) {
+                if (folder.apps.isEmpty() && folder.shortcuts.isEmpty()) {
                     Text(
                         "アプリがありません。上の名前をタップして編集できます。",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -707,9 +737,75 @@ private fun FolderPopup(
                         items(folder.apps, key = { it.key }) { app ->
                             PickerAppTile(app = app, onClick = { onLaunch(app) })
                         }
+                        items(folder.shortcuts, key = { "shortcut:${it.id}" }) { shortcut ->
+                            val icon = apps.firstOrNull { it.packageName == shortcut.packageName }?.icon
+                            FolderShortcutTile(
+                                shortcut = shortcut,
+                                icon = icon,
+                                onClick = { onLaunchShortcut(shortcut) },
+                                onRemove = { onRemoveShortcut(shortcut.id) }
+                            )
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun FolderShortcutTile(
+    shortcut: DockShortcutEntry,
+    icon: Drawable?,
+    onClick: () -> Unit,
+    onRemove: () -> Unit
+) {
+    var menuOpen by remember(shortcut.id) { mutableStateOf(false) }
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { menuOpen = true }
+            )
+            .padding(vertical = 4.dp)
+    ) {
+        if (icon != null) {
+            AppIconImage(icon, 48.dp)
+        } else {
+            Surface(
+                modifier = Modifier.size(48.dp),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        shortcut.label.take(1),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(5.dp))
+        Text(
+            shortcut.label,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.fillMaxWidth()
+        )
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(
+                text = { Text("フォルダから取り出す") },
+                onClick = {
+                    onRemove()
+                    menuOpen = false
+                }
+            )
         }
     }
 }
